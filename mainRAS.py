@@ -18,7 +18,7 @@ from metrics import *
 from torchvision.transforms import transforms
 from plot import loss_plot
 from plot import metrics_plot
-import models
+import torch.nn.functional as F
 
 
 os.environ["CUDA_VISIBLE_DEVICE"] = "0"
@@ -27,15 +27,15 @@ def getArgs():
     parse = argparse.ArgumentParser()
     parse.add_argument('--deepsupervision', default=0)
     parse.add_argument("--action", type=str, help="train/test/train&test", default="train&test")
-    parse.add_argument("--epoch", type=int, default=4)
+    parse.add_argument("--epoch", type=int, default=2)
     parse.add_argument('--arch', '-a', metavar='ARCH', default='DFFnet',
-                       help='UNet/resnet34_unet/unet++/myChannelUnet/Attention_UNet/segnet/r2unet/fcn32s/fcn8s/laddernet/denseUnet/Unet3plus/Mycunet/Resunet/DFFnet')
-    parse.add_argument("--batch_size", type=int, default=2)
+                       help='UNet/resnet34_unet/unet++/myChannelUnet/Attention_UNet/segnet/r2unet/fcn32s/fcn8s/laddernet/denseUnet/Unet3plus/DFFnet/Resunet/RAS')
+    parse.add_argument("--batch_size", type=int, default=4)
     parse.add_argument('--dataset', default='dsb2018Cell',  # dsb2018_256
                        help='dataset name:liver/esophagus/dsb2018Cell/corneal/driveEye/isbiCell/kaggleLung/poly/skin')
     # parse.add_argument("--ckp", type=str, help="the path of model weight file")
     parse.add_argument("--log_dir", default='result/log', help="log dir")
-    parse.add_argument("--threshold", type=float, default=None)
+    # parse.add_argument("--threshold", type=float, default=None)
     parse.add_argument("--resume",type=str,default='saved_model/Mycunet_2_skin_1.pth',help="path to latest checkpoint (default: none)",
     )
     args = parse.parse_args()
@@ -86,12 +86,12 @@ def getModel(args):
     if args.arch == 'Unet3plus':
         from model3 import UNet_3Plus
         model =UNet_3Plus.UNet_3Plus().to(device)
-    if args.arch == 'Mycunet':
-        import models.core.mynet32
-        model =models.core.mynet32.Mynet(channel=3).to(device)
     if args.arch == 'DFFnet':
         import model3.DFFnet
         model =model3.DFFnet.Mynet(channel=3).to(device)
+    if args.arch == 'RAS':
+        import model3.PraNet_ResNet
+        model =model3.PraNet_ResNet.CRANet().to(device)
     if args.arch == 'Resunet':
         import models.core.res_unet_plus
         model =models.core.res_unet_plus.ResUnetPlusPlus(channel=3).to(device)
@@ -161,34 +161,25 @@ def getDataset(args):
         test_dataloaders = DataLoader(test_dataset, batch_size=1)
     return train_dataloaders, val_dataloaders, test_dataloaders
 
+def structure_loss(pred, mask):
+    weit = 1 + 5*torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
+    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduce='none')
+    wbce = (weit*wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
 
+    pred = torch.sigmoid(pred)
+    inter = ((pred * mask)*weit).sum(dim=(2, 3))
+    union = ((pred + mask)*weit).sum(dim=(2, 3))
+    wiou = 1 - (inter + 1)/(union - inter+1)
+    return (wbce + wiou).mean()
 
-def train(model, criterion, optimizer, train_dataloader,val_dataloader, args):
+def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss):
     best_iou, aver_iou, aver_dice, aver_hd = 0,0,0,0
     num_epochs = args.epoch
-    threshold = args.threshold
-    # resume = './saved_model/Mycunet_2_skin_1.pth'
+    # threshold = args.threshold
     loss_list = []
     iou_list = []
     dice_list = []
     hd_list = []
-    # start_epoch = 0
-    # if resume:
-    #     if os.path.exists(resume):
-    #         print("=> loading checkpoint '{}'".format(resume))
-    #         checkpoint = torch.load(resume)
-    #         # best_loss = checkpoint["best_loss"]
-    #         model.load_state_dict(checkpoint["state_dict"])
-    #         start_epoch = checkpoint["epoch"]
-    #         optimizer.load_state_dict(checkpoint["optimizer"])
-    #         print(
-    #             "=> loaded checkpoint '{}' (epoch {})".format(
-    #                 resume, checkpoint["epoch"]
-    #             )
-    #         )
-    #     else:
-    #         print("=> no checkpoint found at '{}'".format(args.resume))
-
     for epoch in range(num_epochs):
         model = model.train()
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -203,25 +194,18 @@ def train(model, criterion, optimizer, train_dataloader,val_dataloader, args):
             labels = y.to(device)
             # zero the parameter gradients
             optimizer.zero_grad()
-            if args.deepsupervision:
-                outputs = model(inputs)
-                loss = 0
-                for output in outputs:
-                    loss += criterion(output, labels)
-                loss /= len(outputs)
-            else:
-                output = model(inputs)
+            lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2 = model(inputs)
+            # output = model(inputs)
 
-                loss = criterion(output, labels)
-            if threshold!=None:
-                if loss > threshold:
-                    loss.backward()
-                    optimizer.step()
-                    epoch_loss += loss.item()
-            else:
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
+            # loss = criterion(output, labels)
+            loss5 = structure_loss(lateral_map_5, labels)
+            loss4 = structure_loss(lateral_map_4, labels)
+            loss3 = structure_loss(lateral_map_3, labels)
+            loss2 = structure_loss(lateral_map_2, labels)
+            loss = loss2 + loss3 + loss4 + loss5
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
 
             print("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
             logging.info("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
@@ -249,15 +233,21 @@ def val(model,best_iou,val_dataloaders):
         #print(num)
         for x, _,pic,mask in val_dataloaders:
             x = x.to(device)
-            y = model(x)
-            if args.deepsupervision:
-                img_y = torch.squeeze(y[-1]).cpu().numpy()
-            else:
-                img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            res5, res4, res3, res2 = model(x)
+            res = res2
+            res = F.upsample(res, size=256, mode='bilinear', align_corners=False)
+            res = res.sigmoid().data.cpu().numpy().squeeze()
+            res = (res - res.min()) / (res.max() - res.min() + 1e-8)
 
-            hd_total += get_hd(mask[0], img_y)
-            miou_total += get_iou(mask[0],img_y)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
-            dice_total += get_dice(mask[0],img_y)
+            # y = model(x)
+            # if args.deepsupervision:
+            #     img_y = torch.squeeze(y[-1]).cpu().numpy()
+            # else:
+            #     img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+
+            hd_total += get_hd(mask[0], res)
+            miou_total += get_iou(mask[0],res)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
+            dice_total += get_dice(mask[0],res)
             if i < num:i+=1   #处理验证集下一张图
         aver_iou = miou_total / num
         aver_hd = hd_total / num
@@ -292,13 +282,19 @@ def test(val_dataloaders,save_predict=False):
         dice_total = 0
         num = len(val_dataloaders)  #验证集图片的总数
         for pic,_,pic_path,mask_path in val_dataloaders:
+            # pic = pic.to(device)
+            # predict = model(pic)
             pic = pic.to(device)
-            predict = model(pic)
-            if args.deepsupervision:
-                predict = torch.squeeze(predict[-1]).cpu().numpy()
-            else:
-                predict = torch.squeeze(predict).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
-            #img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            res5, res4, res3, res2 = model(pic)
+            res = res2
+            res = F.upsample(res, size=256, mode='bilinear', align_corners=False)
+            res = res.sigmoid().data.cpu().numpy().squeeze()
+            predict = (res - res.min()) / (res.max() - res.min() + 1e-8)
+            # if args.deepsupervision:
+            #     predict = torch.squeeze(predict[-1]).cpu().numpy()
+            # else:
+            #     predict = torch.squeeze(predict).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            # #img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
 
             iou = get_iou(mask_path[0],predict)
             miou_total += iou  #获取当前预测图的miou，并加到总miou中
@@ -381,7 +377,9 @@ if __name__ =="__main__":
     print('**************************')
     model = getModel(args)
     train_dataloaders,val_dataloaders,test_dataloaders = getDataset(args)
-    criterion = torch.nn.BCELoss()
+    # criterion = torch.nn.BCEWithLogitsLoss()
+    # criterion = structure_loss()
+
 
     initial_lr = 0.001
     # # opt = torch.optim.Adam(model_test.parameters(), lr=initial_lr)  # try SGD
@@ -391,6 +389,6 @@ if __name__ =="__main__":
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, MAX_STEP, eta_min=1e-5)
     # optimizer = optim.Adam(model.parameters())
     if 'train' in args.action:
-        train(model, criterion, optimizer, train_dataloaders,val_dataloaders, args)
+        train(model, optimizer, train_dataloaders,val_dataloaders, args,structure_loss)
     if 'test' in args.action:
         test(test_dataloaders, save_predict=True)
