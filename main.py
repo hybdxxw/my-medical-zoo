@@ -6,38 +6,28 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torch import autograd, optim
-from UNet import Unet,resnet34_unet
-from attention_unet import AttU_Net
-from channel_unet import myChannelUnet
-from r2unet import R2U_Net
-from segnet import SegNet
-from unetpp import NestedUNet
-from fcn import get_fcn8s
+from comparemodel import UNet,attention_unet ,r2unet,segnet,unetpp,fcn,cenet,LadderNet,DenseUnet
 from dataset import *
 from metrics import *
 from torchvision.transforms import transforms
 from plot import loss_plot
 from plot import metrics_plot
-import models
+
 
 
 os.environ["CUDA_VISIBLE_DEVICE"] = "0"
-from torchvision.models import vgg16
 def getArgs():
     parse = argparse.ArgumentParser()
     parse.add_argument('--deepsupervision', default=0)
     parse.add_argument("--action", type=str, help="train/test/train&test", default="train&test")
     parse.add_argument("--epoch", type=int, default=4)
-    parse.add_argument('--arch', '-a', metavar='ARCH', default='DFFnet',
-                       help='UNet/resnet34_unet/unet++/myChannelUnet/Attention_UNet/segnet/r2unet/fcn32s/fcn8s/laddernet/denseUnet/Unet3plus/Mycunet/Resunet/DFFnet')
+    parse.add_argument('--arch', '-a', metavar='ARCH', default='UNet',
+                       help='UNet/resnet34_unet/unet++/Attention_UNet/segnet/r2unet/fcn32s/fcn8s/laddernet/denseUnet/Unet3plus/Mycunet/Resunet')
     parse.add_argument("--batch_size", type=int, default=2)
-    parse.add_argument('--dataset', default='dsb2018Cell',  # dsb2018_256
-                       help='dataset name:liver/esophagus/dsb2018Cell/corneal/driveEye/isbiCell/kaggleLung/poly/skin')
-    # parse.add_argument("--ckp", type=str, help="the path of model weight file")
+    parse.add_argument('--dataset', default='isbiCell',  # dsb2018_256
+                       help='dataset name:liver/esophagus/dsb2018Cell/corneal/driveEye/isbiCell/kaggleLung/poly/skin/Driveaug')
     parse.add_argument("--log_dir", default='result/log', help="log dir")
     parse.add_argument("--threshold", type=float, default=None)
-    parse.add_argument("--resume",type=str,default='saved_model/Mycunet_2_skin_1.pth',help="path to latest checkpoint (default: none)",
-    )
     args = parse.parse_args()
     return args
 
@@ -55,43 +45,41 @@ def getLog(args):
 
 def getModel(args):
     if args.arch == 'UNet':
-        model = Unet(3, 1).to(device)
+        model = UNet.Unet(3, 1).to(device)
     if args.arch == 'resnet34_unet':
-        model = resnet34_unet(1,pretrained=False).to(device)
+        model = UNet.resnet34_unet(1,pretrained=False).to(device)
     if args.arch == 'unet++':
         args.deepsupervision = True
-        model = NestedUNet(args,3,1).to(device)
+        model = unetpp.NestedUNet(args,3,1).to(device)
     if args.arch =='Attention_UNet':
-        model = AttU_Net(3,1).to(device)
+        model = attention_unet.AttU_Net(3,1).to(device)
     if args.arch == 'segnet':
-        model = SegNet(3,1).to(device)
+        model = segnet.SegNet(3,1).to(device)
     if args.arch == 'r2unet':
-        model = R2U_Net(3,1).to(device)
+        model = r2unet.R2U_Net(3,1).to(device)
     # if args.arch == 'fcn32s':
     #     model = get_fcn32s(1).to(device)
-    if args.arch == 'myChannelUnet':
-        model = myChannelUnet(3,1).to(device)
-    if args.arch == 'fcn8s':
-        assert args.dataset !='esophagus' ,"fcn8s模型不能用于数据集esophagus，因为esophagus数据集为80x80，经过5次的2倍降采样后剩下2.5x2.5，分辨率不能为小数，建议把数据集resize成更高的分辨率再用于fcn"
-        model = get_fcn8s(1).to(device)
+    # if args.arch == 'fcn8s':
+    #     assert args.dataset !='esophagus' ,"fcn8s模型不能用于数据集esophagus，因为esophagus数据集为80x80，经过5次的2倍降采样后剩下2.5x2.5，分辨率不能为小数，建议把数据集resize成更高的分辨率再用于fcn"
+    #     model = get_fcn8s(1).to(device)
     if args.arch == 'cenet':
-        from cenet import CE_Net_
-        model = CE_Net_().to(device)
+        model = cenet.CE_Net_().to(device)
     if args.arch == 'laddernet':
-        from LadderNet import LadderNet
         model = LadderNet().to(device)
     if args.arch == 'denseUnet':
-        from DenseUnet import Dense_Unet
-        model = Dense_Unet().to(device)
+        model = DenseUnet.Dense_Unet().to(device)
     if args.arch == 'Unet3plus':
         from model3 import UNet_3Plus
         model =UNet_3Plus.UNet_3Plus().to(device)
-    if args.arch == 'Mycunet':
-        import models.core.mynet32
-        model =models.core.mynet32.Mynet(channel=3).to(device)
     if args.arch == 'DFFnet':
         import model3.DFFnet
         model =model3.DFFnet.Mynet(channel=3).to(device)
+    if args.arch == 'DFFnetwithatt':
+        import model3.DFFnetwithCSATT
+        model = model3.DFFnetwithCSATT.Mynet(channel=3).to(device)
+    if args.arch == 'RAS':
+        import model3.PraNet_ResNet
+        model =model3.PraNet_ResNet.CRANet().to(device)
     if args.arch == 'Resunet':
         import models.core.res_unet_plus
         model =models.core.res_unet_plus.ResUnetPlusPlus(channel=3).to(device)
@@ -159,36 +147,26 @@ def getDataset(args):
         val_dataloaders = DataLoader(val_dataset, batch_size=1)
         test_dataset = ColonpolypsDataset(r"test", transform=x_transforms, target_transform=y_transforms)
         test_dataloaders = DataLoader(test_dataset, batch_size=1)
+    if args.dataset == 'Driveaug':
+        train_dataset = DriveEyeAug(r"train", transform=x_transforms, target_transform=y_transforms)
+        train_dataloaders = DataLoader(train_dataset, batch_size=args.batch_size,drop_last=True)
+        val_dataset = DriveEyeAug(r"val", transform=x_transforms, target_transform=y_transforms)
+        val_dataloaders = DataLoader(val_dataset, batch_size=1)
+        test_dataset = DriveEyeAug(r"test", transform=x_transforms, target_transform=y_transforms)
+        test_dataloaders = DataLoader(test_dataset, batch_size=1)
     return train_dataloaders, val_dataloaders, test_dataloaders
 
 
 
 def train(model, criterion, optimizer, train_dataloader,val_dataloader, args):
-    best_iou, aver_iou, aver_dice, aver_hd = 0,0,0,0
+    best_iou, aver_iou, aver_dice, aver_hd,acc = 0,0,0,0,0
     num_epochs = args.epoch
     threshold = args.threshold
-    # resume = './saved_model/Mycunet_2_skin_1.pth'
     loss_list = []
     iou_list = []
     dice_list = []
     hd_list = []
-    # start_epoch = 0
-    # if resume:
-    #     if os.path.exists(resume):
-    #         print("=> loading checkpoint '{}'".format(resume))
-    #         checkpoint = torch.load(resume)
-    #         # best_loss = checkpoint["best_loss"]
-    #         model.load_state_dict(checkpoint["state_dict"])
-    #         start_epoch = checkpoint["epoch"]
-    #         optimizer.load_state_dict(checkpoint["optimizer"])
-    #         print(
-    #             "=> loaded checkpoint '{}' (epoch {})".format(
-    #                 resume, checkpoint["epoch"]
-    #             )
-    #         )
-    #     else:
-    #         print("=> no checkpoint found at '{}'".format(args.resume))
-
+    acc_list =[]
     for epoch in range(num_epochs):
         model = model.train()
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -226,10 +204,11 @@ def train(model, criterion, optimizer, train_dataloader,val_dataloader, args):
             print("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
             logging.info("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
         loss_list.append(epoch_loss)
-        best_iou, aver_iou, aver_dice, aver_hd = val(model, best_iou, val_dataloader)
+        best_iou, aver_iou, aver_dice, aver_hd,acc = val(model, best_iou, val_dataloader)
         iou_list.append(aver_iou)
         dice_list.append(aver_dice)
         hd_list.append(aver_hd)
+        acc_list.append(acc)
         print("epoch %d loss:%0.3f" % (epoch, epoch_loss))
         logging.info("epoch %d loss:%0.3f" % (epoch, epoch_loss))
     loss_plot(args, loss_list)
@@ -245,6 +224,7 @@ def val(model,best_iou,val_dataloaders):
         miou_total = 0
         hd_total = 0
         dice_total = 0
+        acc_total = 0
         num = len(val_dataloaders)#验证集图片的总数
         #print(num)
         for x, _,pic,mask in val_dataloaders:
@@ -258,20 +238,24 @@ def val(model,best_iou,val_dataloaders):
             hd_total += get_hd(mask[0], img_y)
             miou_total += get_iou(mask[0],img_y)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
             dice_total += get_dice(mask[0],img_y)
+            acc_total += get_acc(mask[0],img_y)
             if i < num:i+=1   #处理验证集下一张图
         aver_iou = miou_total / num
         aver_hd = hd_total / num
         aver_dice = dice_total/num
-        print('Miou=%f,aver_hd=%f,aver_dice=%f' % (aver_iou,aver_hd,aver_dice))
-        logging.info('Miou=%f,aver_hd=%f,aver_dice=%f' % (aver_iou,aver_hd,aver_dice))
+        acc = acc_total /num
+        print('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
+        logging.info('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
         if aver_iou > best_iou:
             print('aver_iou:{} > best_iou:{}'.format(aver_iou,best_iou))
             logging.info('aver_iou:{} > best_iou:{}'.format(aver_iou,best_iou))
             logging.info('===========>save best model!')
             best_iou = aver_iou
             print('===========>save best model!')
+            # state = {'net': model.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': args.epoch, 'lr_schedule': scheduler}
+            # torch.save(state, r'./saved_model/' + str(args.arch) + '_' + str(args.batch_size) + '_' + str(args.dataset) + '_' + str(args.epoch) + '.pth')
             torch.save(model.state_dict(), r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth')
-        return best_iou,aver_iou,aver_dice,aver_hd
+        return best_iou,aver_iou,aver_dice,aver_hd,acc
 
 def test(val_dataloaders,save_predict=False):
     logging.info('final test........')
@@ -281,7 +265,8 @@ def test(val_dataloaders,save_predict=False):
             os.makedirs(dir)
         else:
             print('dir already exist!')
-    model.load_state_dict(torch.load(r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth', map_location='cpu'))  # 载入训练好的模型
+    # torch.load(r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth', map_location=device)
+    model.load_state_dict(torch.load(r'./saved_model/' + str(args.arch) + '_' + str(args.batch_size) + '_' + str(args.dataset) + '_' + str(args.epoch) + '.pth', map_location=device))
     model.eval()
 
     #plt.ion() #开启动态模式
@@ -290,6 +275,7 @@ def test(val_dataloaders,save_predict=False):
         miou_total = 0
         hd_total = 0
         dice_total = 0
+        acc_total = 0
         num = len(val_dataloaders)  #验证集图片的总数
         for pic,_,pic_path,mask_path in val_dataloaders:
             pic = pic.to(device)
@@ -305,6 +291,8 @@ def test(val_dataloaders,save_predict=False):
             hd_total += get_hd(mask_path[0], predict)
             dice = get_dice(mask_path[0],predict)
             dice_total += dice
+            acc = get_acc(mask_path[0], predict)
+            acc_total += acc
             fig = plt.figure()
             ax1 = fig.add_subplot(1, 3, 1)
             #去轴合并空白
@@ -314,7 +302,7 @@ def test(val_dataloaders,save_predict=False):
             # plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
             # plt.margins(0, 0)
             ax1.set_title('input')
-            plt.imshow(Image.open(pic_path[0]))
+            plt.imshow(Image.open(pic_path[0]).convert('RGB'))
             #print(pic_path[0])
             ax2 = fig.add_subplot(1, 3, 2)
             # 去轴合并空白
@@ -345,11 +333,11 @@ def test(val_dataloaders,save_predict=False):
                     plt.savefig(dir +'/'+ mask_path[0].split('\\')[-1], bbox_inches='tight', dpi=fig.dpi)
             #plt.pause(0.01)
             print('iou={},dice={}'.format(iou,dice))
+            plt.close("all")
             if i < num:i+=1   #处理验证集下一张图
         #plt.show()
-        print('Miou=%f,aver_hd=%f,dice=%f' % (miou_total/num,hd_total/num,dice_total/num))
-        logging.info('Miou=%f,aver_hd=%f,dice=%f' % (miou_total/num,hd_total/num,dice_total/num))
-        #print('M_dice=%f' % (dice_total / num))
+        print('Miou=%f,aver_hd=%f,dice=%f,acc=%f' % (miou_total/num,hd_total/num,dice_total/num,acc_total/num))
+        logging.info('Miou=%f,aver_hd=%f,dice=%f,acc=%f' % (miou_total/num,hd_total/num,dice_total/num,acc_total/num))
 
 if __name__ =="__main__":
 
@@ -380,15 +368,15 @@ if __name__ =="__main__":
           (args.arch, args.epoch, args.batch_size, args.dataset))
     print('**************************')
     model = getModel(args)
-    train_dataloaders,val_dataloaders,test_dataloaders = getDataset(args)
+    train_dataloaders, val_dataloaders, test_dataloaders = getDataset(args)
     criterion = torch.nn.BCELoss()
 
-    initial_lr = 0.001
+    initial_lr = 0.0001
     # # opt = torch.optim.Adam(model_test.parameters(), lr=initial_lr)  # try SGD
     # # # opt = optim.SGD(model_test.parameters(), lr = initial_lr, momentum=0.99)
     optimizer = optim.Adam(model.parameters(),lr=initial_lr,weight_decay=1e-5)
     MAX_STEP = int(1e10)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, MAX_STEP, eta_min=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, MAX_STEP, eta_min=1e-6)
     # optimizer = optim.Adam(model.parameters())
     if 'train' in args.action:
         train(model, criterion, optimizer, train_dataloaders,val_dataloaders, args)

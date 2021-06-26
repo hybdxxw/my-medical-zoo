@@ -12,7 +12,51 @@ import torch
 from torch import nn, Tensor
 from torch.nn import init
 from torch.nn import functional as F
-#ablation for transfomer version
+
+
+class SpatialGroupEnhance(nn.Module):
+
+    def __init__(self, groups):
+        super().__init__()
+        self.groups = groups
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.weight = nn.Parameter(torch.zeros(1, groups, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, groups, 1, 1))
+        self.sig = nn.Sigmoid()
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = x.view(b * self.groups, -1, h, w)  # bs*g,dim//g,h,w
+        xn = x * self.avg_pool(x)  # bs*g,dim//g,h,w
+        xn = xn.sum(dim=1, keepdim=True)  # bs*g,1,h,w
+        t = xn.view(b * self.groups, -1)  # bs*g,h*w
+
+        t = t - t.mean(dim=1, keepdim=True)  # bs*g,h*w
+        std = t.std(dim=1, keepdim=True) + 1e-5
+        t = t / std  # bs*g,h*w
+        t = t.view(b, self.groups, h, w)  # bs,g,h*w
+
+        t = t * self.weight + self.bias  # bs,g,h*w
+        t = t.view(b * self.groups, 1, h, w)  # bs*g,1,h*w
+        x = x * self.sig(t)
+        x = x.view(b, c, h, w)
+
+        return x
 
 
 class ECAAttention(nn.Module):
@@ -45,6 +89,149 @@ class ECAAttention(nn.Module):
         y=y.permute(0,2,1).unsqueeze(-1) #bs,c,1,1
         return x*y.expand_as(x)
 
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_planes, ratio=16):
+        super(ChannelAttention, self).__init__()
+
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+        self.fc1 = nn.Conv2d(in_planes, in_planes // 16, 1, bias=False)
+        self.relu1 = nn.ReLU()
+        self.fc2 = nn.Conv2d(in_planes // 16, in_planes, 1, bias=False)
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        max_out = self.fc2(self.relu1(self.fc1(self.max_pool(x))))
+        out = max_out
+        return self.sigmoid(out)
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        assert kernel_size in (3, 7), 'kernel size must be 3 or 7'
+        padding = 3 if kernel_size == 7 else 1
+
+        self.conv1 = nn.Conv2d(1, 1, kernel_size, padding=padding, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = max_out
+        x = self.conv1(x)
+        return self.sigmoid(x)
+
+
+class PSA(nn.Module):
+
+    def __init__(self, channel=512, reduction=4, S=4):
+        super().__init__()
+        self.S = S
+
+        self.convs = []
+        for i in range(S):
+            self.convs.append(nn.Conv2d(channel // S, channel // S, kernel_size=2 * (i + 1) + 1, padding=i + 1))
+
+        self.se_blocks = []
+        for i in range(S):
+            self.se_blocks.append(nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(channel // S, channel // (S * reduction), kernel_size=1, bias=False),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // (S * reduction), channel // S, kernel_size=1, bias=False),
+                nn.Sigmoid()
+            ))
+
+        self.softmax = nn.Softmax(dim=1)
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+
+        # Step1:SPC module
+        SPC_out = x.view(b, self.S, c // self.S, h, w)  # bs,s,ci,h,w
+        for idx, conv in enumerate(self.convs):
+            SPC_out[:, idx, :, :, :] = conv(SPC_out[:, idx, :, :, :])
+
+        # Step2:SE weight
+        SE_out = torch.zeros_like(SPC_out)
+        for idx, se in enumerate(self.se_blocks):
+            SE_out[:, idx, :, :, :] = se(SPC_out[:, idx, :, :, :])
+
+        # Step3:Softmax
+        softmax_out = self.softmax(SE_out)
+
+        # Step4:SPA
+        PSA_out = SPC_out * softmax_out
+        PSA_out = PSA_out.view(b, -1, h, w)
+
+        return PSA_out
+
+
+class DoubleAttention(nn.Module):
+
+    def __init__(self, in_channels,c_m,c_n,reconstruct = True):
+        super().__init__()
+        self.in_channels=in_channels
+        self.reconstruct = reconstruct
+        self.c_m=c_m
+        self.c_n=c_n
+        self.convA=nn.Conv2d(in_channels,c_m,1)
+        self.convB=nn.Conv2d(in_channels,c_n,1)
+        self.convV=nn.Conv2d(in_channels,c_n,1)
+        if self.reconstruct:
+            self.conv_reconstruct = nn.Conv2d(c_m, in_channels, kernel_size = 1)
+        self.init_weights()
+
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        b, c, h,w=x.shape
+        assert c==self.in_channels
+        A=self.convA(x) #b,c_m,h,w
+        B=self.convB(x) #b,c_n,h,w
+        V=self.convV(x) #b,c_n,h,w
+        tmpA=A.view(b,self.c_m,-1)
+        attention_maps=F.softmax(B.view(b,self.c_n,-1))
+        attention_vectors=F.softmax(V.view(b,self.c_n,-1))
+        # step 1: feature gating
+        global_descriptors=torch.bmm(tmpA,attention_maps.permute(0,2,1)) #b.c_m,c_n
+        # step 2: feature distribution
+        tmpZ = global_descriptors.matmul(attention_vectors) #b,c_m,h*w
+        tmpZ=tmpZ.view(b,self.c_m,h,w) #b,c_m,h,w
+        if self.reconstruct:
+            tmpZ=self.conv_reconstruct(tmpZ)
+
+        return tmpZ
 
 class BasicConv2d(nn.Module):
     def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1):
@@ -186,51 +373,6 @@ class Squeeze_Excite_Block(nn.Module):
         return x * y.expand_as(x)
 
 
-class ASPP(nn.Module):
-    def __init__(self, in_dims, out_dims, rate=[6, 12, 18]):
-        super(ASPP, self).__init__()
-
-        self.aspp_block1 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[0], dilation=rate[0]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-        self.aspp_block2 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[1], dilation=rate[1]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-        self.aspp_block3 = nn.Sequential(
-            nn.Conv2d(
-                in_dims, out_dims, 3, stride=1, padding=rate[2], dilation=rate[2]
-            ),
-            nn.ReLU(inplace=True),
-            nn.BatchNorm2d(out_dims),
-        )
-
-        self.output = nn.Conv2d(len(rate) * out_dims, out_dims, 1)
-        self._init_weights()
-
-    def forward(self, x):
-        x1 = self.aspp_block1(x)
-        x2 = self.aspp_block2(x)
-        x3 = self.aspp_block3(x)
-        out = torch.cat([x1, x2, x3], dim=1)
-        return self.output(out)
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight)
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-
 class Upsample_(nn.Module):
     def __init__(self, scale=2):
         super(Upsample_, self).__init__()
@@ -305,6 +447,14 @@ class Mynet(nn.Module):
 
         self.squeeze_excite1 = Squeeze_Excite_Block(filters[0])
         self.ECAttention = ECAAttention()
+        self.PSA1 = PSA(channel=filters[2])
+        self.PSA2 = PSA(channel=filters[3])
+        self.PSA3 = PSA(channel=filters[4])
+        self.Dounle1 = DoubleAttention(filters[0], filters[0] // 4, filters[0] // 4, True)
+        self.Dounle2 = DoubleAttention(filters[1], filters[1] // 4, filters[1] // 4, True)
+        self.Dounle3 = DoubleAttention(filters[2], filters[2] // 4, filters[2] // 4, True)
+        self.Dounle4 = DoubleAttention(filters[3], filters[3] // 4, filters[3] // 4, True)
+        self.SGE = SpatialGroupEnhance(groups=8)
         self.transformer1 = transformer.Transformer(num_channels =filters[0],attention_for_seg=True,num_tokens = filters[0])
 
         self.residual_conv1 = ResidualConv(filters[0], filters[1], 2, 1)
@@ -363,31 +513,36 @@ class Mynet(nn.Module):
         # print(x1.shape)
 
         # x2 = self.squeeze_excite1(x1)  #([1, 32, 512, 512])
-        x2 = self.ECAttention(x1)
+        x2 = self.Dounle1(x1)
+        # x2 = self.ECAttention(x1)
         # print(x2.shape)
-        x2 = self.transformer1(x2)
+        # x2 = self.transformer1(x2)
         # print(x2.shape)
         x2r = self.residual_conv1(x2)  #[1, 64, 256, 256])
         # print(x2.shape)
 
         # x3 = self.squeeze_excite2(x2r) #([1, 64, 256, 256])
-        x3 = self.ECAttention(x2r)
-        x3 = self.transformer2(x3)
+        x3 = self.Dounle2(x2r)
+        # x3 = self.ECAttention(x2r)
+        # x3 = self.transformer2(x3)
         # print(x3.shape)
         x3r = self.residual_conv2(x3)   #([1, 128, 128, 128])
         # print(x3.shape)
 
         # x4 = self.squeeze_excite3(x3r)  #([1, 128, 128, 128])
-        x4 = self.ECAttention(x3r)
-        x4 = self.transformer3(x4)
+        x4 = self.Dounle3(x3r)
+        # x4 = self.PSA1(x3r)
+        # x4 = self.transformer3(x4)
         # print(x4.shape)
         x4r = self.residual_conv3(x4)  #([1, 256, 64, 64])
         # print(x4r.shape)
 
         # x5 = self.squeeze_excite4(x4r)  #1,256,64
-        x5 = self.ECAttention(x4r)
-        x5 = self.transformer4(x5)
+        x5 = self.Dounle4(x4r)
+        # x5 = self.PSA2(x4r)
+        # x5 = self.transformer4(x5)
         x5r = self.residual_conv4(x5)   #1,512,32
+        x5r = self.SGE(x5r)
         # print(x5r.shape)
         x3MSF= self.MSF1(x3r) #32,128
         # print(x3MSF.shape)
@@ -464,9 +619,3 @@ class Mynet(nn.Module):
 #
 # if __name__ =="__main__":
 #     test()
-
-
-    #model = LadderNet(inplanes=1, num_classes=2, filters=10).cuda()
-    #print(torchsummary.summary(model, input_size=(1, 64, 64),device="cuda"))
-    # print(LadderNet(1,2,4,10))
-#dummy_input = torch.rand(1, 1, 64, 64).cuda()#假设输入1张64*

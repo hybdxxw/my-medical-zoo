@@ -160,7 +160,7 @@ class CornealDataset(data.Dataset):#角膜
     def __init__(self, state, transform=None, target_transform=None):
         self.state = state
         self.aug = True
-        self.root = r'E:\datasets\CORN\CORN\Corneal nerve curivilinear segmentation\Corneal nerve curivilinear segmentation'
+        self.root = r'./CORN\CORN\Corneal nerve curivilinear segmentation\Corneal nerve curivilinear segmentation'
         self.img_paths = None
         self.mask_paths = None
         self.train_img_paths, self.val_img_paths,self.test_img_paths = None,None,None
@@ -170,12 +170,12 @@ class CornealDataset(data.Dataset):#角膜
         self.target_transform = target_transform
 
     def getDataPath(self):
-        self.train_img_paths = glob(self.root + r'\training\train_images\*')
-        self.train_mask_paths = glob(self.root + r'\training\train_mask\*')
-        self.val_img_paths = glob(self.root + r'\val\val_images\*')
-        self.val_mask_paths = glob(self.root + r'\val\val_mask\*')
-        self.test_img_paths = glob(self.root + r'\test\test_images\*')
-        self.test_mask_paths = glob(self.root + r'\test\test_mask\*')
+        self.train_img_paths = glob(self.root + r'/training/train_images/*')
+        self.train_mask_paths = glob(self.root + r'/training/train_mask/*')
+        self.val_img_paths = glob(self.root + r'/val/val_images/*')
+        self.val_mask_paths = glob(self.root + r'/val/val_mask/*')
+        self.test_img_paths = glob(self.root + r'/test/test_images/*')
+        self.test_mask_paths = glob(self.root + r'/test/test_mask/*')
         # self.train_img_paths, self.val_img_paths, self.train_mask_paths, self.val_mask_paths = \
         #     train_test_split(self.img_paths, self.mask_paths, test_size=0.2, random_state=41)
         assert self.state == 'train' or self.state == 'val' or self.state == 'test'
@@ -227,8 +227,8 @@ class IsbiCellDataset(data.Dataset):#细胞核小数据512*512 30train
         self.target_transform = target_transform
 
     def getDataPath(self):
-        self.img_paths = glob(self.root + r'/train/images/*')
-        self.mask_paths = glob(self.root + r'/train/label/*')
+        self.img_paths = glob(self.root + r'/images/*')
+        self.mask_paths = glob(self.root + r'/masks/*')
         # self.test_img_paths = glob(self.root + r'\test\test_images\*')
         # self.test_mask_paths = glob(self.root + r'\test\test_mask\*')
         self.train_img_paths, self.val_img_paths, self.train_mask_paths, self.val_mask_paths = \
@@ -245,12 +245,14 @@ class IsbiCellDataset(data.Dataset):#细胞核小数据512*512 30train
     def __getitem__(self, index):
         pic_path = self.pics[index]
         mask_path = self.masks[index]
-        # origin_x = Image.open(x_path)
-        # origin_y = Image.open(y_path)
-        pic = cv2.imread(pic_path)
-        mask = cv2.imread(mask_path,cv2.COLOR_BGR2GRAY)
-        pic = pic.astype('float32') / 255
-        mask = mask.astype('float32') / 255
+        pic = Image.open(pic_path).convert('RGB')
+        mask = Image.open(mask_path).convert('L')
+        pic = np.asarray(pic, dtype='float32') / 255
+        mask = np.asarray(mask, dtype='float32') / 255
+        # pic = cv2.imread(pic_path)
+        # mask = cv2.imread(mask_path,cv2.COLOR_BGR2GRAY)
+        # pic = pic.astype('float32') / 255
+        # mask = mask.astype('float32') / 255
         # if self.aug:
         #     if random.uniform(0, 1) > 0.5:
         #         pic = pic[:, ::-1, :].copy()
@@ -271,7 +273,7 @@ class LungKaggleDataset(data.Dataset):
     def __init__(self, state, transform=None, target_transform=None):
         self.state = state
         self.aug = True
-        self.root = r'./Data/finding-lungs-in-ct-data-kaggle'
+        self.root = r'./Data/lungsct'
         self.img_paths = None
         self.mask_paths = None
         self.train_img_paths, self.val_img_paths,self.test_img_paths = None,None,None
@@ -284,7 +286,7 @@ class LungKaggleDataset(data.Dataset):
         self.img_paths = glob(self.root + r'/2d_images/*')
         self.mask_paths = glob(self.root + r'/2d_masks/*')
         self.train_img_paths, self.val_img_paths, self.train_mask_paths, self.val_mask_paths = \
-            train_test_split(self.img_paths, self.mask_paths, test_size=0.2, random_state=41)
+            train_test_split(self.img_paths, self.mask_paths, test_size=0.1, random_state=41)
         self.test_img_paths, self.test_mask_paths = self.val_img_paths, self.val_mask_paths
         assert self.state == 'train' or self.state == 'val' or self.state == 'test'
         if self.state == 'train':
@@ -458,7 +460,7 @@ class DriveEyeDataset(data.Dataset):
             return self.val_img_paths, self.val_mask_paths
 
     def __getitem__(self, index):
-        imgx, imgy = (576, 576)
+        # imgx, imgy = (576, 576)
         pic_path = self.pics[index]
         mask_path = self.masks[index]
         # origin_x = Image.open(x_path)
@@ -469,6 +471,121 @@ class DriveEyeDataset(data.Dataset):
         mask = Image.open(mask_path).convert('L')
         # pic = pic.resize((576, 576),Image.BILINEAR)
         # mask =mask.resize((576, 576),Image.BILINEAR)
+        # pic = pic.astype('float32') / 255 #opencv PIL属性不一样
+        pic = np.asarray(pic,dtype='float32')/255
+        mask = np.asarray(mask,dtype='float32')/255
+        # if self.aug:
+        #     if random.uniform(0, 1) > 0.5:
+        #         pic = pic[:, ::-1, :].copy()
+        #         mask = mask[:, ::-1].copy()
+        #     if random.uniform(0, 1) > 0.5:
+        #         pic = pic[::-1, :, :].copy()
+        #         mask = mask[::-1, :].copy()
+        if self.transform is not None:
+            img_x = self.transform(pic)
+        if self.target_transform is not None:
+            img_y = self.target_transform(mask)
+        return img_x, img_y, pic_path, mask_path
+
+    def __len__(self):
+        return len(self.pics)
+
+class DriveEyeAug(data.Dataset):
+    def __init__(self, state, transform=None, target_transform=None):
+        self.state = state
+        self.aug = True
+        # self.root = r"H:\CODE\UNET-ZOO-master\Data\dsb2018_256"
+        self.root = r'./Data/Driveaug'
+        self.img_paths = None
+        self.mask_paths = None
+        self.train_img_paths, self.val_img_paths = None, None
+        self.train_mask_paths, self.val_mask_paths = None, None
+        self.pics, self.masks = self.getDataPath()
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def getDataPath(self):
+        self.img_paths = glob(self.root + '/images/*')  # 放服务器上要改相对路径
+        self.mask_paths = glob(self.root + '/masks/*')
+        self.train_img_paths, self.val_img_paths, self.train_mask_paths, self.val_mask_paths = \
+            train_test_split(self.img_paths, self.mask_paths, test_size=0.1, random_state=41)
+        assert self.state == 'train' or self.state == 'val' or self.state == 'test'
+        if self.state == 'train':
+            return self.train_img_paths, self.train_mask_paths
+        if self.state == 'val':
+            return self.val_img_paths, self.val_mask_paths
+        if self.state == 'test':
+            return self.val_img_paths, self.val_mask_paths
+
+    def __getitem__(self, index):
+        # imgx, imgy = (576, 576)
+        pic_path = self.pics[index]
+        mask_path = self.masks[index]
+        # origin_x = Image.open(x_path)
+        # origin_y = Image.open(y_path)
+        # pic = cv2.imread(pic_path)
+        pic = Image.open(pic_path).convert('RGB')
+        # mask = cv2.imread(mask_path, cv2.COLOR_BGR2GRAY)
+        mask = Image.open(mask_path).convert('L')
+        # pic = pic.resize((576, 576),Image.BILINEAR)
+        # mask =mask.resize((576, 576),Image.BILINEAR)
+        # pic = pic.astype('float32') / 255 #opencv PIL属性不一样
+        pic = np.asarray(pic,dtype='float32')/255
+        mask = np.asarray(mask,dtype='float32')/255
+        # if self.aug:
+        #     if random.uniform(0, 1) > 0.5:
+        #         pic = pic[:, ::-1, :].copy()
+        #         mask = mask[:, ::-1].copy()
+        #     if random.uniform(0, 1) > 0.5:
+        #         pic = pic[::-1, :, :].copy()
+        #         mask = mask[::-1, :].copy()
+        if self.transform is not None:
+            img_x = self.transform(pic)
+        if self.target_transform is not None:
+            img_y = self.target_transform(mask)
+        return img_x, img_y, pic_path, mask_path
+
+    def __len__(self):
+        return len(self.pics)
+
+
+class babyDataset(data.Dataset):
+    def __init__(self, state, transform=None, target_transform=None):
+        self.state = state
+        self.aug = True
+        # self.root = r"H:\CODE\UNET-ZOO-master\Data\dsb2018_256"
+        self.root = r'./Data/baby2'
+        self.img_paths = None
+        self.mask_paths = None
+        self.train_img_paths, self.val_img_paths = None, None
+        self.train_mask_paths, self.val_mask_paths = None, None
+        self.pics, self.masks = self.getDataPath()
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def getDataPath(self):
+        self.img_paths = glob(self.root + '/images/*')
+        # self.mask_paths = glob(self.root + '/GT_ICM/*')   #embryo
+        self.mask_paths = glob(self.root + '/GT_TE/*')  #taipang
+        self.train_img_paths, self.val_img_paths, self.train_mask_paths, self.val_mask_paths = \
+            train_test_split(self.img_paths, self.mask_paths, test_size=0.1, random_state=41)
+        assert self.state == 'train' or self.state == 'val' or self.state == 'test'
+        if self.state == 'train':
+            return self.train_img_paths, self.train_mask_paths
+        if self.state == 'val':
+            return self.val_img_paths, self.val_mask_paths
+        if self.state == 'test':
+            return self.val_img_paths, self.val_mask_paths
+
+    def __getitem__(self, index):
+        pic_path = self.pics[index]
+        mask_path = self.masks[index]
+        # origin_x = Image.open(x_path)
+        # origin_y = Image.open(y_path)
+        # pic = cv2.imread(pic_path)
+        pic = Image.open(pic_path).convert('RGB')
+        # mask = cv2.imread(mask_path, cv2.COLOR_BGR2GRAY)
+        mask = Image.open(mask_path).convert('L')
         # pic = pic.astype('float32') / 255 #opencv PIL属性不一样
         pic = np.asarray(pic,dtype='float32')/255
         mask = np.asarray(mask,dtype='float32')/255

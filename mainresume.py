@@ -12,23 +12,23 @@ from metrics import *
 from torchvision.transforms import transforms
 from plot import loss_plot
 from plot import metrics_plot
-import torch.nn.functional as F
-
+#resume bug 不能plot
 
 os.environ["CUDA_VISIBLE_DEVICE"] = "0"
 def getArgs():
     parse = argparse.ArgumentParser()
     parse.add_argument('--deepsupervision', default=0)
     parse.add_argument("--action", type=str, help="train/test/train&test", default="train&test")
-    parse.add_argument("--epoch", type=int, default=1)
-    parse.add_argument('--arch', '-a', metavar='ARCH', default='DFFtry',
-                       help='DFFnet/Resunet/RAS/DFFnetwithatt/DFFtry/DFFvis')
+    parse.add_argument("--epoch", type=int, default=10)
+    parse.add_argument('--arch', '-a', metavar='ARCH', default='UNet',
+                       help='UNet/resnet34_unet/unet++/Attention_UNet/segnet/r2unet/fcn32s/fcn8s/laddernet/denseUnet/Unet3plus/Mycunet/Resunet')
     parse.add_argument("--batch_size", type=int, default=2)
-    parse.add_argument('--dataset', default='baby',  # dsb2018_256
-                       help='dataset name:liver/esophagus/dsb2018Cell/corneal/driveEye/isbiCell/kaggleLung/poly/skin/baby')
+    parse.add_argument('--dataset', default='driveEye',  # dsb2018_256
+                       help='dataset name:liver/esophagus/dsb2018Cell/corneal/driveEye/isbiCell/kaggleLung/poly/skin')
+    # parse.add_argument("--ckp", type=str, help="the path of model weight file")
     parse.add_argument("--log_dir", default='result/log', help="log dir")
-    parse.add_argument('--resume', default=None,help='(path of trained _model)load trained model to continue train')
-
+    parse.add_argument("--threshold", type=float, default=None)
+    parse.add_argument('--resume', default=not None, help='(path of trained _model)load trained model to continue train')
     args = parse.parse_args()
     return args
 
@@ -45,18 +45,36 @@ def getLog(args):
     return logging
 
 def getModel(args):
-    if args.arch == 'DFFvis':
-        import imagevismynet
-        model =imagevismynet.Mynet(channel=3).to(device)
+    if args.arch == 'UNet':
+        model = UNet.Unet(3, 1).to(device)
+    if args.arch == 'resnet34_unet':
+        model = UNet.resnet34_unet(1,pretrained=False).to(device)
+    if args.arch == 'unet++':
+        args.deepsupervision = True
+        model = unetpp.NestedUNet(args,3,1).to(device)
+    if args.arch =='Attention_UNet':
+        model = attention_unet.AttU_Net(3,1).to(device)
+    if args.arch == 'segnet':
+        model = segnet.SegNet(3,1).to(device)
+    if args.arch == 'r2unet':
+        model = r2unet.R2U_Net(3,1).to(device)
+    # if args.arch == 'fcn32s':
+    #     model = get_fcn32s(1).to(device)
+    # if args.arch == 'fcn8s':
+    #     assert args.dataset !='esophagus' ,"fcn8s模型不能用于数据集esophagus，因为esophagus数据集为80x80，经过5次的2倍降采样后剩下2.5x2.5，分辨率不能为小数，建议把数据集resize成更高的分辨率再用于fcn"
+    #     model = get_fcn8s(1).to(device)
+    if args.arch == 'cenet':
+        model = cenet.CE_Net_().to(device)
+    if args.arch == 'laddernet':
+        model = LadderNet().to(device)
+    if args.arch == 'denseUnet':
+        model = DenseUnet.Dense_Unet().to(device)
     if args.arch == 'Unet3plus':
         from model3 import UNet_3Plus
         model =UNet_3Plus.UNet_3Plus().to(device)
     if args.arch == 'DFFnet':
         import model3.DFFnet
         model =model3.DFFnet.Mynet(channel=3).to(device)
-    if args.arch == 'DFFtry':
-        import model3.DFFtry
-        model = model3.DFFtry.Mynet(channel=3).to(device)
     if args.arch == 'DFFnetwithatt':
         import model3.DFFnetwithCSATT
         model = model3.DFFnetwithCSATT.Mynet(channel=3).to(device)
@@ -130,36 +148,21 @@ def getDataset(args):
         val_dataloaders = DataLoader(val_dataset, batch_size=1)
         test_dataset = ColonpolypsDataset(r"test", transform=x_transforms, target_transform=y_transforms)
         test_dataloaders = DataLoader(test_dataset, batch_size=1)
-    if args.dataset == 'baby':
-        train_dataset = babyDataset(r"train", transform=x_transforms, target_transform=y_transforms)
-        train_dataloaders = DataLoader(train_dataset, batch_size=args.batch_size,drop_last=True)
-        val_dataset = babyDataset(r"val", transform=x_transforms, target_transform=y_transforms)
-        val_dataloaders = DataLoader(val_dataset, batch_size=1)
-        test_dataset = babyDataset(r"test", transform=x_transforms, target_transform=y_transforms)
-        test_dataloaders = DataLoader(test_dataset, batch_size=1)
     return train_dataloaders, val_dataloaders, test_dataloaders
 
-def structure_loss(pred, mask):
-    weit = 1 + 5*torch.abs(F.avg_pool2d(mask, kernel_size=31, stride=1, padding=15) - mask)
-    wbce = F.binary_cross_entropy_with_logits(pred, mask, reduce='none')
-    wbce = (weit*wbce).sum(dim=(2, 3)) / weit.sum(dim=(2, 3))
 
-    pred = torch.sigmoid(pred)
-    inter = ((pred * mask)*weit).sum(dim=(2, 3))
-    union = ((pred + mask)*weit).sum(dim=(2, 3))
-    wiou = 1 - (inter + 1)/(union - inter+1)
-    return (wbce + wiou).mean()
 
-def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss):
-    best_iou, aver_iou, aver_dice, aver_hd, acc = 0,0,0,0,0
+def train(model, criterion, optimizer, train_dataloader,val_dataloader, args):
+    best_iou, aver_iou, aver_dice, aver_hd = 0,0,0,0
     num_epochs = args.epoch
-    # threshold = args.threshold
+    threshold = args.threshold
     loss_list = []
     iou_list = []
     dice_list = []
     hd_list = []
-    acc_list =[]
-    for epoch in range(num_epochs):
+
+
+    for epoch in range(start_epoch,num_epochs):
         model = model.train()
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         logging.info('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -173,32 +176,38 @@ def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss
             labels = y.to(device)
             # zero the parameter gradients
             optimizer.zero_grad()
-            lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2 = model(inputs)
-            # output = model(inputs)
+            if args.deepsupervision:
+                outputs = model(inputs)
+                loss = 0
+                for output in outputs:
+                    loss += criterion(output, labels)
+                loss /= len(outputs)
+            else:
+                output = model(inputs)
 
-            # loss = criterion(output, labels)
-            loss5 = structure_loss(lateral_map_5, labels)
-            loss4 = structure_loss(lateral_map_4, labels)
-            loss3 = structure_loss(lateral_map_3, labels)
-            loss2 = structure_loss(lateral_map_2, labels)
-            loss = loss2 + loss3 + loss4 + loss5
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
+                loss = criterion(output, labels)
+            if threshold!=None:
+                if loss > threshold:
+                    loss.backward()
+                    optimizer.step()
+                    epoch_loss += loss.item()
+            else:
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
 
             print("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
             logging.info("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
         loss_list.append(epoch_loss)
-        best_iou, aver_iou, aver_dice, aver_hd ,acc= val(model, best_iou, val_dataloader)
+        best_iou, aver_iou, aver_dice, aver_hd = val(model, best_iou, val_dataloader)
         iou_list.append(aver_iou)
         dice_list.append(aver_dice)
         hd_list.append(aver_hd)
-        acc_list.append(acc)
         print("epoch %d loss:%0.3f" % (epoch, epoch_loss))
         logging.info("epoch %d loss:%0.3f" % (epoch, epoch_loss))
-    loss_plot(args, loss_list)
-    metrics_plot(args, 'iou&dice', iou_list, dice_list)
-    metrics_plot(args, 'hd', hd_list)
+    # loss_plot(args, loss_list)
+    # metrics_plot(args, 'iou&dice', iou_list, dice_list)
+    # metrics_plot(args, 'hd', hd_list)
     return model
 
 def val(model,best_iou,val_dataloaders):
@@ -209,45 +218,36 @@ def val(model,best_iou,val_dataloaders):
         miou_total = 0
         hd_total = 0
         dice_total = 0
-        acc_total = 0
         num = len(val_dataloaders)#验证集图片的总数
         #print(num)
         for x, _,pic,mask in val_dataloaders:
             x = x.to(device)
-            res5, res4, res3, res2  = model(x)
-            res = res2
-            res = F.upsample(res, size=512, mode='bilinear', align_corners=False)
-            res = res.sigmoid().data.cpu().numpy().squeeze()
-            res = (res - res.min()) / (res.max() - res.min() + 1e-8)
+            y = model(x)
+            if args.deepsupervision:
+                img_y = torch.squeeze(y[-1]).cpu().numpy()
+            else:
+                img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
 
-            # y = model(x)
-            # if args.deepsupervision:
-            #     img_y = torch.squeeze(y[-1]).cpu().numpy()
-            # else:
-            #     img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
-
-            hd_total += get_hd(mask[0], res)
-            miou_total += get_iou(mask[0],res)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
-            dice_total += get_dice(mask[0],res)
-            acc_total += get_acc(mask[0], res)
+            hd_total += get_hd(mask[0], img_y)
+            miou_total += get_iou(mask[0],img_y)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
+            dice_total += get_dice(mask[0],img_y)
             if i < num:i+=1   #处理验证集下一张图
         aver_iou = miou_total / num
         aver_hd = hd_total / num
         aver_dice = dice_total/num
-        acc = acc_total/num
-
-        print('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
-        logging.info('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
+        print('Miou=%f,aver_hd=%f,aver_dice=%f' % (aver_iou,aver_hd,aver_dice))
+        logging.info('Miou=%f,aver_hd=%f,aver_dice=%f' % (aver_iou,aver_hd,aver_dice))
         if aver_iou > best_iou:
             print('aver_iou:{} > best_iou:{}'.format(aver_iou,best_iou))
             logging.info('aver_iou:{} > best_iou:{}'.format(aver_iou,best_iou))
             logging.info('===========>save best model!')
             best_iou = aver_iou
             print('===========>save best model!')
-            # state = {'net': model.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': args.epoch, 'lr_schedule': scheduler}
-            # torch.save(state, r'./saved_model/' + str(args.arch) + '_' + str(args.batch_size) + '_' + str(args.dataset) + '_' + str(args.epoch) + '.pth')
-            torch.save(model.state_dict(), r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth')
-        return best_iou,aver_iou,aver_dice,aver_hd,acc
+            state ={'net': model.state_dict(), 'optimizer':optimizer.state_dict(), 'epoch': args.epoch,'lr_schedule':scheduler }
+            torch.save(state, r'./saved_model/' + str(args.arch) + '_' + str(args.batch_size) + '_' + str(args.dataset) + '_' + str(args.epoch) + '.pth')
+
+            # torch.save(model.state_dict(), r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth')
+        return best_iou,aver_iou,aver_dice,aver_hd
 
 def test(val_dataloaders,save_predict=False):
     logging.info('final test........')
@@ -257,8 +257,7 @@ def test(val_dataloaders,save_predict=False):
             os.makedirs(dir)
         else:
             print('dir already exist!')
-    # torch.load(r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth', map_location=device)  # 载入训练好的模型
-    model.load_state_dict(torch.load(r'./saved_model/' + str(args.arch) + '_' + str(args.batch_size) + '_' + str(args.dataset) + '_' + str(args.epoch) + '.pth', map_location=device))
+    torch.load(r'./saved_model/'+str(args.arch)+'_'+str(args.batch_size)+'_'+str(args.dataset)+'_'+str(args.epoch)+'.pth', map_location=device)  # 载入训练好的模型
     model.eval()
 
     #plt.ion() #开启动态模式
@@ -267,50 +266,34 @@ def test(val_dataloaders,save_predict=False):
         miou_total = 0
         hd_total = 0
         dice_total = 0
-        acc_total = 0
         num = len(val_dataloaders)  #验证集图片的总数
         for pic,_,pic_path,mask_path in val_dataloaders:
-            # pic = pic.to(device)
-            # predict = model(pic)
             pic = pic.to(device)
-            res5, res4, res3, res2  = model(pic)
-            res = res2
-            res = F.upsample(res, size=512, mode='bilinear', align_corners=False)
-            res = res.sigmoid().data.cpu().numpy().squeeze()
-            predict = (res - res.min()) / (res.max() - res.min() + 1e-8)
-
-            # x5R_vis  = x5R_vis .cpu().numpy()  # 用Numpy处理返回的[1,256,513,513]特征图
-            # x5R_vis  = np.max(x5R_vis , axis=1).reshape(512, 512)
-            # x5R_vis  = (((x5R_vis  - np.min(x5R_vis )) / (
-            #             np.max(x5R_vis ) - np.min(x5R_vis ))) * 255).astype(np.uint8)  # 归一化并映射到0-255的整数，方便伪彩色化
-            # savedir = './feature map/'
-            # x5R_vis  = cv2.applyColorMap(x5R_vis , cv2.COLORMAP_JET)  # 伪彩色处理
-            # cv2.imwrite(savedir  + str(i) + '.jpg', x5R_vis )  # 保存可视化图像
-            # if args.deepsupervision:
-            #     predict = torch.squeeze(predict[-1]).cpu().numpy()
-            # else:
-            #     predict = torch.squeeze(predict).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
-            # #img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            predict = model(pic)
+            if args.deepsupervision:
+                predict = torch.squeeze(predict[-1]).cpu().numpy()
+            else:
+                predict = torch.squeeze(predict).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            #img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
 
             iou = get_iou(mask_path[0],predict)
             miou_total += iou  #获取当前预测图的miou，并加到总miou中
             hd_total += get_hd(mask_path[0], predict)
             dice = get_dice(mask_path[0],predict)
             dice_total += dice
-            acc = get_acc(mask_path[0], predict)
-            acc_total += acc
-
             fig = plt.figure()
             ax1 = fig.add_subplot(1, 3, 1)
+            #去轴合并空白
             plt.axis('off')
             # plt.gca().xaxis.set_major_locator(plt.NullLocator())
             # plt.gca().yaxis.set_major_locator(plt.NullLocator())
             # plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
             # plt.margins(0, 0)
             ax1.set_title('input')
-            plt.imshow(Image.open(pic_path[0]).convert('RGB'))
-
+            plt.imshow(Image.open(pic_path[0]))
+            #print(pic_path[0])
             ax2 = fig.add_subplot(1, 3, 2)
+            # 去轴合并空白
             plt.axis('off')
             # plt.gca().xaxis.set_major_locator(plt.NullLocator())
             # plt.gca().yaxis.set_major_locator(plt.NullLocator())
@@ -318,8 +301,8 @@ def test(val_dataloaders,save_predict=False):
             # plt.margins(0, 0)
             ax2.set_title('predict')
             plt.imshow(predict,cmap='Greys_r')
-
             ax3 = fig.add_subplot(1, 3, 3)
+            # 去轴合并空白
             plt.axis('off')
             # plt.gca().xaxis.set_major_locator(plt.NullLocator())
             # plt.gca().yaxis.set_major_locator(plt.NullLocator())
@@ -338,11 +321,11 @@ def test(val_dataloaders,save_predict=False):
                     plt.savefig(dir +'/'+ mask_path[0].split('\\')[-1], bbox_inches='tight', dpi=fig.dpi)
             #plt.pause(0.01)
             print('iou={},dice={}'.format(iou,dice))
-            plt.close("all")
             if i < num:i+=1   #处理验证集下一张图
         #plt.show()
-        print('Miou=%f,aver_hd=%f,dice=%f,acc=%f' % (miou_total/num,hd_total/num,dice_total/num,acc_total/num))
-        logging.info('Miou=%f,aver_hd=%f,dice=%f,acc=%f' % (miou_total/num,hd_total/num,dice_total/num,acc_total/num))
+        print('Miou=%f,aver_hd=%f,dice=%f' % (miou_total/num,hd_total/num,dice_total/num))
+        logging.info('Miou=%f,aver_hd=%f,dice=%f' % (miou_total/num,hd_total/num,dice_total/num))
+        #print('M_dice=%f' % (dice_total / num))
 
 if __name__ =="__main__":
 
@@ -374,9 +357,7 @@ if __name__ =="__main__":
     print('**************************')
     model = getModel(args)
     train_dataloaders,val_dataloaders,test_dataloaders = getDataset(args)
-    # criterion = torch.nn.BCEWithLogitsLoss()
-    # criterion = structure_loss()
-
+    criterion = torch.nn.BCELoss()
 
     initial_lr = 0.0001
     # # opt = torch.optim.Adam(model_test.parameters(), lr=initial_lr)  # try SGD
@@ -394,7 +375,7 @@ if __name__ =="__main__":
         start_epoch = checkpoint['epoch']
         for epoch in range(start_epoch +1, args.epoch):
             print('start_epoch',start_epoch)
-            train(model, optimizer, train_dataloaders,val_dataloaders, args,structure_loss)
+            train(model, criterion, optimizer, train_dataloaders,val_dataloaders, args)
 
             state = {'net': model.state_dict(), 'optimizer': optimizer.state_dict(), 'epoch': args.epoch,
                      'lr_schedule': scheduler}
@@ -402,6 +383,8 @@ if __name__ =="__main__":
                 args.dataset) + '_' + str(args.epoch) + '.pth')
 
     if 'train' in args.action:
-        train(model, optimizer, train_dataloaders,val_dataloaders, args,structure_loss)
+        train(model, criterion, optimizer, train_dataloaders,val_dataloaders, args)
     if 'test' in args.action:
         test(test_dataloaders, save_predict=True)
+
+

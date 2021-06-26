@@ -21,7 +21,7 @@ def getArgs():
     parse.add_argument('--deepsupervision', default=0)
     parse.add_argument("--action", type=str, help="train/test/train&test", default="train&test")
     parse.add_argument("--epoch", type=int, default=1)
-    parse.add_argument('--arch', '-a', metavar='ARCH', default='DFFtry',
+    parse.add_argument('--arch', '-a', metavar='ARCH', default='DFFvis',
                        help='DFFnet/Resunet/RAS/DFFnetwithatt/DFFtry/DFFvis')
     parse.add_argument("--batch_size", type=int, default=2)
     parse.add_argument('--dataset', default='baby',  # dsb2018_256
@@ -151,14 +151,14 @@ def structure_loss(pred, mask):
     return (wbce + wiou).mean()
 
 def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss):
-    best_iou, aver_iou, aver_dice, aver_hd, acc = 0,0,0,0,0
+    best_iou, aver_iou, aver_dice, aver_hd , acc = 0,0,0,0,0
     num_epochs = args.epoch
     # threshold = args.threshold
     loss_list = []
     iou_list = []
     dice_list = []
     hd_list = []
-    acc_list =[]
+    acc_list = []
     for epoch in range(num_epochs):
         model = model.train()
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -173,7 +173,7 @@ def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss
             labels = y.to(device)
             # zero the parameter gradients
             optimizer.zero_grad()
-            lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2 = model(inputs)
+            lateral_map_5, lateral_map_4, lateral_map_3, lateral_map_2 ,x5R_vis = model(inputs)
             # output = model(inputs)
 
             # loss = criterion(output, labels)
@@ -189,7 +189,7 @@ def train(model, optimizer, train_dataloader,val_dataloader, args,structure_loss
             print("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
             logging.info("%d/%d,train_loss:%0.3f" % (step, (dt_size - 1) // train_dataloader.batch_size + 1, loss.item()))
         loss_list.append(epoch_loss)
-        best_iou, aver_iou, aver_dice, aver_hd ,acc= val(model, best_iou, val_dataloader)
+        best_iou, aver_iou, aver_dice, aver_hd ,acc = val(model, best_iou, val_dataloader)
         iou_list.append(aver_iou)
         dice_list.append(aver_dice)
         hd_list.append(aver_hd)
@@ -209,12 +209,12 @@ def val(model,best_iou,val_dataloaders):
         miou_total = 0
         hd_total = 0
         dice_total = 0
-        acc_total = 0
+        acc_total =0
         num = len(val_dataloaders)#验证集图片的总数
         #print(num)
         for x, _,pic,mask in val_dataloaders:
             x = x.to(device)
-            res5, res4, res3, res2  = model(x)
+            res5, res4, res3, res2 ,x5R_vis = model(x)
             res = res2
             res = F.upsample(res, size=512, mode='bilinear', align_corners=False)
             res = res.sigmoid().data.cpu().numpy().squeeze()
@@ -229,13 +229,12 @@ def val(model,best_iou,val_dataloaders):
             hd_total += get_hd(mask[0], res)
             miou_total += get_iou(mask[0],res)  #获取当前预测图的miou，并加到总miou中,mask在前，predict在后
             dice_total += get_dice(mask[0],res)
-            acc_total += get_acc(mask[0], res)
+            acc_total += get_acc(mask[0],res)
             if i < num:i+=1   #处理验证集下一张图
         aver_iou = miou_total / num
         aver_hd = hd_total / num
         aver_dice = dice_total/num
         acc = acc_total/num
-
         print('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
         logging.info('Miou=%f,aver_hd=%f,aver_dice=%f,acc=%f' % (aver_iou,aver_hd,aver_dice,acc))
         if aver_iou > best_iou:
@@ -273,24 +272,19 @@ def test(val_dataloaders,save_predict=False):
             # pic = pic.to(device)
             # predict = model(pic)
             pic = pic.to(device)
-            res5, res4, res3, res2  = model(pic)
+            res5, res4, res3, res2 , x5R_vis = model(pic)
             res = res2
             res = F.upsample(res, size=512, mode='bilinear', align_corners=False)
             res = res.sigmoid().data.cpu().numpy().squeeze()
             predict = (res - res.min()) / (res.max() - res.min() + 1e-8)
 
-            # x5R_vis  = x5R_vis .cpu().numpy()  # 用Numpy处理返回的[1,256,513,513]特征图
-            # x5R_vis  = np.max(x5R_vis , axis=1).reshape(512, 512)
-            # x5R_vis  = (((x5R_vis  - np.min(x5R_vis )) / (
-            #             np.max(x5R_vis ) - np.min(x5R_vis ))) * 255).astype(np.uint8)  # 归一化并映射到0-255的整数，方便伪彩色化
-            # savedir = './feature map/'
-            # x5R_vis  = cv2.applyColorMap(x5R_vis , cv2.COLORMAP_JET)  # 伪彩色处理
-            # cv2.imwrite(savedir  + str(i) + '.jpg', x5R_vis )  # 保存可视化图像
-            # if args.deepsupervision:
-            #     predict = torch.squeeze(predict[-1]).cpu().numpy()
-            # else:
-            #     predict = torch.squeeze(predict).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
-            # #img_y = torch.squeeze(y).cpu().numpy()  #输入损失函数之前要把预测图变成numpy格式，且为了跟训练图对应，要额外加多一维表示batchsize
+            x5R_vis  = x5R_vis .cpu().numpy()  # 用Numpy处理返回的[1,256,513,513]特征图
+            x5R_vis  = np.max(x5R_vis , axis=1).reshape(512, 512)
+            x5R_vis  = (((x5R_vis  - np.min(x5R_vis )) / (
+                        np.max(x5R_vis ) - np.min(x5R_vis ))) * 255).astype(np.uint8)  # 归一化并映射到0-255的整数，方便伪彩色化
+            savedir = './feature map/'
+            x5R_vis  = cv2.applyColorMap(x5R_vis , cv2.COLORMAP_JET)  # 伪彩色处理
+            cv2.imwrite(savedir + str(i) + '.jpg', x5R_vis)  # 保存可视化图像
 
             iou = get_iou(mask_path[0],predict)
             miou_total += iou  #获取当前预测图的miou，并加到总miou中
@@ -303,28 +297,16 @@ def test(val_dataloaders,save_predict=False):
             fig = plt.figure()
             ax1 = fig.add_subplot(1, 3, 1)
             plt.axis('off')
-            # plt.gca().xaxis.set_major_locator(plt.NullLocator())
-            # plt.gca().yaxis.set_major_locator(plt.NullLocator())
-            # plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
-            # plt.margins(0, 0)
             ax1.set_title('input')
             plt.imshow(Image.open(pic_path[0]).convert('RGB'))
 
             ax2 = fig.add_subplot(1, 3, 2)
             plt.axis('off')
-            # plt.gca().xaxis.set_major_locator(plt.NullLocator())
-            # plt.gca().yaxis.set_major_locator(plt.NullLocator())
-            # plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
-            # plt.margins(0, 0)
+
             ax2.set_title('predict')
             plt.imshow(predict,cmap='Greys_r')
-
             ax3 = fig.add_subplot(1, 3, 3)
             plt.axis('off')
-            # plt.gca().xaxis.set_major_locator(plt.NullLocator())
-            # plt.gca().yaxis.set_major_locator(plt.NullLocator())
-            # plt.subplots_adjust(top=1, bottom=0, right=1, left=0, hspace=0, wspace=0)
-            # plt.margins(0, 0)
             ax3.set_title('mask')
             plt.imshow(Image.open(mask_path[0]), cmap='Greys_r')
             #print(mask_path[0])
@@ -367,9 +349,9 @@ if __name__ =="__main__":
     args = getArgs()
     logging = getLog(args)
     print('**************************')
-    print('model3:%s,\nepoch:%s,\nbatch size:%s\ndataset:%s' % \
+    print('model:%s,\nepoch:%s,\nbatch size:%s\ndataset:%s' % \
           (args.arch, args.epoch, args.batch_size,args.dataset))
-    logging.info('\n=======\nmodel3:%s,\nepoch:%s,\nbatch size:%s\ndataset:%s\n========' % \
+    logging.info('\n=======\nmodel:%s,\nepoch:%s,\nbatch size:%s\ndataset:%s\n========' % \
           (args.arch, args.epoch, args.batch_size, args.dataset))
     print('**************************')
     model = getModel(args)
